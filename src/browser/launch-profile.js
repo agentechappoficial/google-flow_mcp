@@ -31,32 +31,15 @@ export async function launchKiaraProfile(headless = false) {
 
   logger.info('Launching Chrome via direct+CDP method (anti-detection)', { chromePath, profileSource });
 
-  try {
-    // Try connecting to existing Chrome instance first (non-destructive reuse)
-    const existing = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-    logger.info('Found existing Chrome instance, reusing');
-    const ctxs = existing.contexts();
-    const ctx = ctxs[0] || await existing.newContext();
-    const pgs = ctx.pages();
-    const pg = pgs.find(p => {
-      try { return p.url().startsWith('http') && !p.url().startsWith('chrome'); } catch { return false; }
-    }) || pgs[0];
-    setBrowser(existing);
-    setContext(ctx);
-    setConnected(true);
-    if (pg) { setPage(pg); return { browser: existing, context: ctx, page: pg }; }
-    const newPage = await ctx.newPage();
-    setPage(newPage);
-    return { browser: existing, context: ctx, page: newPage };
-  } catch {
-    // Launch Chrome directly (not via Playwright) for anti-detection
-    return await launchChromeDirect({
-      chromePath,
-      cdpPort,
-      headless,
-      profileSource,
-    });
-  }
+  // Never attach to an arbitrary local CDP endpoint. It may belong to a
+  // different Chrome profile and expose unrelated Google sessions.
+  // launchChromeDirect enforces the existing-CDP opt-in and profile-copy gate.
+  return await launchChromeDirect({
+    chromePath,
+    cdpPort,
+    headless,
+    profileSource,
+  });
 }
 
 export async function navigateToFlow(page, toolPage) {
