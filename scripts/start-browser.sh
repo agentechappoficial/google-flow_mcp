@@ -1,121 +1,70 @@
 #!/usr/bin/env bash
 set -euo pipefail
-IFS=$'\n\t'
 
-# Start Chrome with configured Google profile and CDP debugging
-# Runs cross-platform on macOS and Linux. Reads settings from config/flow.config.json if present.
+# Hardened launcher: dedicated browser profile, loopback-only CDP, no eval or process killing.
+log() { printf '[flow-browser] %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
 
-log()  { echo "[$(date '+%Y-%m-%dT%H:%M:%S')] INFO  $*" >&2; }
-warn() { echo "[$(date '+%Y-%m-%dT%H:%M:%S')] WARN  $*" >&2; }
-die()  { echo "[$(date '+%Y-%m-%dT%H:%M:%S')] ERROR $*" >&2; exit 1; }
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+CONFIG_PATH="$PROJECT_DIR/config/flow.config.json"
+command -v node >/dev/null || die "Node.js is required"
 
-# --- OS Detection and Defaults ---
-OS_TYPE=$(uname -s)
 CHROME=""
-USER_DATA_DIR=""
-
-if [[ "$OS_TYPE" == "Darwin" ]]; then
-  # macOS defaults
-  for candidate in \
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-    "$HOME/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; do
-    if [[ -f "$candidate" ]]; then
-      CHROME="$candidate"
-      break
-    fi
-  done
-  USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome"
-else
-  # Linux/Unix defaults
-  for candidate in \
-    "/opt/google/chrome/chrome" \
-    "/usr/bin/google-chrome" \
-    "/usr/bin/google-chrome-stable" \
-    "/usr/bin/chromium-browser" \
-    "/usr/bin/chromium" \
-    "/snap/bin/chromium"; do
-    if [[ -f "$candidate" ]]; then
-      CHROME="$candidate"
-      break
-    fi
-  done
-  USER_DATA_DIR="$HOME/.config/google-chrome"
-fi
+for candidate in /opt/google/chrome/chrome /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
+  if [[ -x "$candidate" ]]; then CHROME="$candidate"; break; fi
+done
 
 PROFILE="Default"
-CDP_PORT=9222
-
-# --- Config Override ---
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIG_PATH="$PROJECT_DIR/config/flow.config.json"
+CDP_PORT="9222"
+USER_DATA_DIR="${FLOW_CHROME_USER_DATA_DIR:-$HOME/.local/share/google-flow-mcp/chrome-profile}"
 
 if [[ -f "$CONFIG_PATH" ]]; then
-  log "Found config file at $CONFIG_PATH, reading overrides..."
-  # Use node to parse JSON to avoid external jq dependency
-  eval "$(node -e "
-  const fs = require('fs');
-  try {
-    const cfg = JSON.parse(fs.readFileSync('$CONFIG_PATH', 'utf8'));
-    if (cfg.chromeExecutable || cfg.chromePath) console.log('CHROME=\"' + (cfg.chromeExecutable || cfg.chromePath) + '\"');
-    if (cfg.chromeUserDataDir) console.log('USER_DATA_DIR=\"' + cfg.chromeUserDataDir + '\"');
-    if (cfg.chromeProfile) console.log('PROFILE=\"' + cfg.chromeProfile + '\"');
-    if (cfg.cdpPort) console.log('CDP_PORT=\"' + cfg.cdpPort + '\"');
-  } catch(e) {}
-  ")"
+  # NUL-separated fields avoid shell evaluation and preserve whitespace.
+  mapfile -d '' -t fields < <(node - "$CONFIG_PATH" <<'NODE'
+const fs = require('node:fs');
+const cfg = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+for (const v of [cfg.chromeExecutable || cfg.chromePath || '', cfg.chromeProfile || 'Default', String(cfg.cdpPort ?? 9222)]) {
+  process.stdout.write(String(v) + '\0');
+}
+NODE
+  )
+  CHROME="${fields[0]:-$CHROME}"
+  PROFILE="${fields[1]:-Default}"
+  CDP_PORT="${fields[2]:-9222}"
 fi
 
-if [[ -z "$CHROME" ]]; then
-  die "Google Chrome executable not found. Please set 'chromeExecutable' in config/flow.config.json or install Google Chrome."
+[[ -x "$CHROME" ]] || die "Chrome executable missing"
+[[ "$CDP_PORT" =~ ^[0-9]+$ ]] && ((10#$CDP_PORT >= 1024 && 10#$CDP_PORT <= 65535)) || die "Invalid CDP port"
+[[ "$PROFILE" =~ ^[a-zA-Z0-9._ -]+$ ]] || die "Invalid Chrome profile name"
+[[ "$USER_DATA_DIR" == /* ]] || die "Browser data directory must be absolute"
+[[ "$USER_DATA_DIR" != "$HOME/.config/google-chrome" ]] || die "Refusing to use personal Chrome profile"
+
+umask 077
+mkdir -p -- "$USER_DATA_DIR"
+chmod 700 -- "$USER_DATA_DIR"
+if (echo >"/dev/tcp/127.0.0.1/$CDP_PORT") >/dev/null 2>&1; then
+  die "CDP port is already occupied; refusing to attach or terminate another process"
 fi
 
-if [[ ! -f "$CHROME" ]]; then
-  die "Chrome not found at $CHROME. Please check your path or set 'chromeExecutable' in config/flow.config.json."
-fi
-
-# --- Check if CDP port is already in use ---
-if lsof -i :$CDP_PORT >/dev/null 2>&1; then
-  warn "CDP port $CDP_PORT already in use — checking if it's our Chrome..."
-  CURL_RESULT=$(curl -s http://localhost:$CDP_PORT/json/version 2>/dev/null || echo "")
-  if [[ -n "$CURL_RESULT" ]]; then
-    log "Chrome already running on CDP port $CDP_PORT"
-    exit 0
-  else
-    warn "Port $CDP_PORT is occupied but not responding to CDP. Attempting to kill..."
-    lsof -ti :$CDP_PORT | xargs kill -9 2>/dev/null || true
-    sleep 2
-  fi
-fi
-
-log "Launching Chrome on CDP port $CDP_PORT"
-log "Chrome path: $CHROME"
-log "User data dir: $USER_DATA_DIR"
-log "Profile: $PROFILE"
-
+log "Starting isolated Chrome (CDP bound to loopback)"
 "$CHROME" \
   --user-data-dir="$USER_DATA_DIR" \
   --profile-directory="$PROFILE" \
+  --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port="$CDP_PORT" \
   --no-first-run \
   --no-default-browser-check \
   --disable-extensions \
-  --disable-sync \
-  --disable-features=ChromeWhatsNewUI \
-  --disable-component-update \
-  --disable-sync-preferences \
-  &
-# NOTE: do NOT add --disable-background-networking — it prevents the DevTools
-# server from starting, so :9222/json/version never responds.
-
+  --disable-sync &
 CHROME_PID=$!
-log "Chrome launched (PID: $CHROME_PID)"
 
-for i in $(seq 1 15); do
-  if curl -s http://localhost:$CDP_PORT/json/version >/dev/null 2>&1; then
-    log "Chrome CDP ready on port $CDP_PORT"
+for ((i=0; i<15; i++)); do
+  if curl --silent --fail --max-time 1 "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null; then
+    log "Chrome CDP ready"
     exit 0
   fi
+  if ! kill -0 "$CHROME_PID" 2>/dev/null; then die "Chrome exited"; fi
   sleep 1
 done
-
-die "Chrome did not start CDP on port $CDP_PORT within 15 seconds"
+die "Chrome CDP failed to start"
