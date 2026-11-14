@@ -40,7 +40,7 @@ async function attachToExisting(cdpUrl) {
   if (process.env.FLOW_ALLOW_EXISTING_CDP !== '1') {
     throw new FlowError(ErrorCodes.CONFIG_ERROR, 'Attaching to an existing CDP browser is disabled for security.');
   }
-  if (!/^http:\/\/127\\.0\\.0\\.1:[0-9]+$/.test(cdpUrl)) {
+  if (!/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(cdpUrl)) {
     throw new FlowError(ErrorCodes.CONFIG_ERROR, 'Only loopback CDP is allowed');
   }
   const existing = await chromium.connectOverCDP(cdpUrl);
@@ -219,6 +219,9 @@ export async function launchChromeDirect(options = {}) {
     }
 
     const { randomUUID } = await import('crypto');
+    if (process.env.FLOW_ALLOW_PROFILE_COPY !== '1') {
+      throw new FlowError(ErrorCodes.CONFIG_ERROR, 'Copying Chrome profiles and session cookies is disabled. Use a dedicated authenticated Flow profile.');
+    }
     const tempDir = path.join(os.tmpdir(), `chrome-kiara-cdp-${Date.now()}-${randomUUID().slice(0, 8)}`);
     fs.mkdirSync(tempDir, { recursive: true, mode: 0o700 });
 
@@ -226,9 +229,6 @@ export async function launchChromeDirect(options = {}) {
     // Only copy when the source profile is NOT in use (i.e. Chrome closed for
     // that profile). If copy fails, continue with a fresh temp profile and let
     // the user sign in via the launched window.
-    if (process.env.FLOW_ALLOW_PROFILE_COPY !== '1') {
-      throw new FlowError(ErrorCodes.CONFIG_ERROR, 'Copying Chrome profiles and session cookies is disabled. Use a dedicated authenticated Flow profile.');
-    }
     const localStateSrc = path.join(path.dirname(profileSource), 'Local State');
     try {
       if (fs.existsSync(profileSource)) {
@@ -245,6 +245,7 @@ export async function launchChromeDirect(options = {}) {
     }
 
     const args = [
+      '--remote-debugging-address=127.0.0.1',
       `--remote-debugging-port=${cdpPort}`,
       `--user-data-dir=${tempDir}`,
       `--profile-directory=${get('chromeProfile', 'Default')}`,
