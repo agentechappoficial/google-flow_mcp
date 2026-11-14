@@ -2,6 +2,7 @@ import { chromium } from 'playwright';
 import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
+import net from 'node:net';
 import { logger } from '../utils/logger.js';
 import { get } from '../utils/config.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
@@ -32,6 +33,30 @@ export function isBrowserConnected() {
     return isPageAlive(page);
   } catch {
     return false;
+  }
+}
+
+// A CDP listener on localhost is not proof that it belongs to this MCP.
+// Refuse occupied ports before starting a new browser, rather than attaching
+// to an unrelated browser after a failed launch.
+async function assertCdpPortAvailable(port) {
+  const number = Number(port);
+  if (!Number.isInteger(number) || number < 1024 || number > 65535) {
+    throw new FlowError(ErrorCodes.CONFIG_ERROR, 'CDP port must be an integer between 1024 and 65535');
+  }
+  const occupied = await new Promise((resolve, reject) => {
+    const socket = net.connect({ host: '127.0.0.1', port: number });
+    socket.setTimeout(2000);
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('error', error => {
+      socket.destroy();
+      if (error.code === 'ECONNREFUSED') resolve(false);
+      else reject(error);
+    });
+    socket.once('timeout', () => { socket.destroy(); reject(new Error('CDP port check timed out')); });
+  });
+  if (occupied) {
+    throw new FlowError(ErrorCodes.CONFIG_ERROR, 'CDP port already occupied; refusing to attach to an unverified browser');
   }
 }
 
@@ -217,6 +242,8 @@ export async function launchChromeDirect(options = {}) {
     } catch {
       // Nothing listening — fall through to direct launch.
     }
+
+    await assertCdpPortAvailable(cdpPort);
 
     const { randomUUID } = await import('crypto');
     if (process.env.FLOW_ALLOW_PROFILE_COPY !== '1') {
