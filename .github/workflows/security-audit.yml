@@ -33,6 +33,23 @@ jobs:
         id: full_audit
         continue-on-error: true
         run: npm audit --audit-level=high
+      - name: Generate safe lockfile remediation proposal
+        if: always()
+        run: |
+          cp package-lock.json package-lock.original.json
+          npm audit fix --package-lock-only --ignore-scripts --no-fund || true
+          node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync('package-lock.original.json'));const b=JSON.parse(fs.readFileSync('package-lock.json'));for(const name of Object.keys(b.packages)){if(a.packages[name]?.version!==b.packages[name]?.version) console.log(name+': '+(a.packages[name]?.version||'new')+' -> '+b.packages[name]?.version)}" > remediation-versions.txt
+          npm audit --json > remediation-audit.json || true
+      - name: Upload remediation report for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-remediation-proposal
+          path: |
+            package-lock.json
+            remediation-versions.txt
+            remediation-audit.json
+          retention-days: 7
       - name: JavaScript syntax checks
         run: |
           node --check src/index.js
