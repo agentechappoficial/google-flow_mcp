@@ -1,11 +1,9 @@
-import { chromium } from 'playwright';
-import path from 'path';
 import fs from 'fs';
 import { logger } from '../utils/logger.js';
 import { get } from '../utils/config.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
-import { launchChromeDirect, setPage, setContext, setConnected, setBrowser, isBrowserConnected } from './connect.js';
-import { getDefaultChromePath, getChromeProfileSourcePath } from '../utils/platform.js';
+import { launchChromeDirect, isBrowserConnected } from './connect.js';
+import { getDefaultChromePath } from '../utils/platform.js';
 
 export async function launchKiaraProfile(headless = false) {
   if (isBrowserConnected()) {
@@ -15,30 +13,17 @@ export async function launchKiaraProfile(headless = false) {
 
   const cdpPort = get('cdpPort', 9222);
   const chromePath = get('chromeExecutable') || getDefaultChromePath();
-  const profileName = get('chromeProfile', 'Default');
-  const profileSource = (get('chromeUserDataDir') && path.join(get('chromeUserDataDir'), profileName))
-    || getChromeProfileSourcePath(profileName);
-
   if (!chromePath || !fs.existsSync(chromePath)) {
     throw new FlowError(ErrorCodes.PLAYWRIGHT_ERROR,
       `Chrome not found${chromePath ? ` at ${chromePath}` : ''}. Set "chromeExecutable" in config/flow.config.json to your Chrome install path.`);
   }
 
-  if (!fs.existsSync(profileSource)) {
-    throw new FlowError(ErrorCodes.CONFIG_ERROR,
-      `Chrome profile "${profileName}" not found at ${profileSource}. Set "chromeUserDataDir" and "chromeProfile" in config/flow.config.json, and make sure this Chrome profile is signed in with your Google account.`);
-  }
+  logger.info('Launching Chrome with a dedicated Flow profile', { chromePath });
 
-  logger.info('Launching Chrome via direct+CDP method (anti-detection)', { chromePath, profileSource });
-
-  // Never attach to an arbitrary local CDP endpoint. It may belong to a
-  // different Chrome profile and expose unrelated Google sessions.
-  // launchChromeDirect enforces the existing-CDP opt-in and profile-copy gate.
   return await launchChromeDirect({
     chromePath,
     cdpPort,
     headless,
-    profileSource,
   });
 }
 
