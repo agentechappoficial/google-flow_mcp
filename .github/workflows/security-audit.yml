@@ -1,4 +1,5 @@
 name: Security audit (isolated)
+# Revalidate committed security dependency fixes
 on:
   push:
     branches: [security/hardening-review]
