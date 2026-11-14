@@ -36,7 +36,8 @@ fi
 
 [[ -x "$CHROME" ]] || die "Chrome executable missing"
 [[ "$CDP_PORT" =~ ^[0-9]+$ ]] && ((10#$CDP_PORT >= 1024 && 10#$CDP_PORT <= 65535)) || die "Invalid CDP port"
-[[ "$PROFILE" =~ ^[a-zA-Z0-9._ -]+$ ]] || die "Invalid Chrome profile name"
+PROFILE_PATTERN="^[a-zA-Z0-9._ -]+$"
+[[ "$PROFILE" =~ $PROFILE_PATTERN ]] || die "Invalid Chrome profile name"
 [[ "$USER_DATA_DIR" == /* ]] || die "Browser data directory must be absolute"
 [[ "$USER_DATA_DIR" != "$HOME/.config/google-chrome" ]] || die "Refusing to use personal Chrome profile"
 
