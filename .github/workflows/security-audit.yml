@@ -1,0 +1,36 @@
+name: Security audit (isolated)
+on:
+  push:
+    branches: [security/hardening-review]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-and-dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate shell syntax
+        run: bash -n scripts/start-browser.sh
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Dependency vulnerability audit
+        run: npm audit --audit-level=high
+      - name: JavaScript syntax checks
+        run: |
+          node --check src/index.js
+          node --check src/browser/connect.js
+          node --check src/browser/launch-profile.js
+      - name: Tests
+        run: npm test
