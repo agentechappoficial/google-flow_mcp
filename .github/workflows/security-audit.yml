@@ -25,7 +25,13 @@ jobs:
         run: bash -n scripts/start-browser.sh
       - name: Install locked dependencies without lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Dependency vulnerability audit
+      - name: Dependency vulnerability audit (production)
+        id: prod_audit
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
+      - name: Dependency vulnerability audit (all dependencies)
+        id: full_audit
+        continue-on-error: true
         run: npm audit --audit-level=high
       - name: JavaScript syntax checks
         run: |
@@ -34,3 +40,13 @@ jobs:
           node --check src/browser/launch-profile.js
       - name: Tests
         run: npm test
+      - name: Enforce security audit gate
+        if: always()
+        env:
+          PROD_AUDIT: ${{ steps.prod_audit.outcome }}
+          FULL_AUDIT: ${{ steps.full_audit.outcome }}
+        run: |
+          if [ "$PROD_AUDIT" != success ] || [ "$FULL_AUDIT" != success ]; then
+            echo 'Security audit failed: production and/or development vulnerabilities remain.' >&2
+            exit 1
+          fi
