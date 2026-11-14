@@ -6,8 +6,7 @@ import net from 'node:net';
 import { logger } from '../utils/logger.js';
 import { get } from '../utils/config.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
-import os from 'os';
-import { getDefaultChromePath, getChromeProfileSourcePath } from '../utils/platform.js';
+import { getDefaultChromePath } from '../utils/platform.js';
 import { isFlowUrl } from '../utils/sanitize.js';
 
 let browser = null;
@@ -179,6 +178,9 @@ async function launchNewBrowser(cdpPort, options = {}) {
     // No existing instance, proceed to launch.
   }
 
+  await assertCdpPortAvailable(cdpPort);
+  fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+
   logger.info('Launching Chrome with Kiara profile', {
     chromePath,
     profileDir,
@@ -212,9 +214,6 @@ export async function launchChromeDirect(options = {}) {
   const chromePath = options.chromePath || get('chromeExecutable') || getDefaultChromePath();
   const cdpPort = options.cdpPort || get('cdpPort', 9222);
   const headless = options.headless ?? get('headless', false);
-  const profileSource = options.profileSource
-    || (get('chromeUserDataDir') && path.join(get('chromeUserDataDir'), get('chromeProfile', 'Default')))
-    || getChromeProfileSourcePath(get('chromeProfile', 'Default'));
 
   if (isBrowserConnected()) {
     logger.info('Already connected, reusing browser');
@@ -245,36 +244,27 @@ export async function launchChromeDirect(options = {}) {
 
     await assertCdpPortAvailable(cdpPort);
 
-    const { randomUUID } = await import('crypto');
-    if (process.env.FLOW_ALLOW_PROFILE_COPY !== '1') {
-      throw new FlowError(ErrorCodes.CONFIG_ERROR, 'Copying Chrome profiles and session cookies is disabled. Use a dedicated authenticated Flow profile.');
+    // A dedicated, persistent profile is required. Never copy browser cookies.
+    // Reject symlinks and profiles outside the service user's private home.
+    const home = fs.realpathSync(process.env.HOME || '/nonexistent');
+    const profileDir = path.resolve(options.profileDir || path.join(home, '.local/share/google-flow-mcp/chrome-profile'));
+    if (profileDir === home || !profileDir.startsWith(home + path.sep)) {
+      throw new FlowError(ErrorCodes.CONFIG_ERROR, 'Dedicated Chrome profile must be inside the service user home');
     }
-    const tempDir = path.join(os.tmpdir(), `chrome-kiara-cdp-${Date.now()}-${randomUUID().slice(0, 8)}`);
-    fs.mkdirSync(tempDir, { recursive: true, mode: 0o700 });
-
-    // NOTE: copying a live Chrome profile (locked SQLite) can corrupt cookies.
-    // Only copy when the source profile is NOT in use (i.e. Chrome closed for
-    // that profile). If copy fails, continue with a fresh temp profile and let
-    // the user sign in via the launched window.
-    const localStateSrc = path.join(path.dirname(profileSource), 'Local State');
-    try {
-      if (fs.existsSync(profileSource)) {
-        fs.cpSync(profileSource, path.join(tempDir, get('chromeProfile', 'Default')), { recursive: true });
-      }
-      if (fs.existsSync(localStateSrc)) {
-        fs.cpSync(localStateSrc, path.join(tempDir, 'Local State'));
-      } else {
-        fs.writeFileSync(path.join(tempDir, 'Local State'), JSON.stringify({ profile: { info_cache: {} } }));
-      }
-      logger.info('Temp profile created with cookies', { tempDir });
-    } catch (e) {
-      logger.warn('Profile copy failed (profile may be locked) — using fresh temp profile', { error: e.message });
+    if (fs.existsSync(profileDir) && fs.lstatSync(profileDir).isSymbolicLink()) {
+      throw new FlowError(ErrorCodes.CONFIG_ERROR, 'Chrome profile cannot be a symlink');
     }
+    fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+    const resolvedProfile = fs.realpathSync(profileDir);
+    if (!resolvedProfile.startsWith(home + path.sep)) {
+      throw new FlowError(ErrorCodes.CONFIG_ERROR, 'Chrome profile resolves outside the service user home');
+    }
+    fs.chmodSync(profileDir, 0o700);
 
     const args = [
       '--remote-debugging-address=127.0.0.1',
       `--remote-debugging-port=${cdpPort}`,
-      `--user-data-dir=${tempDir}`,
+      `--user-data-dir=${profileDir}`,
       `--profile-directory=${get('chromeProfile', 'Default')}`,
       '--no-first-run', '--no-default-browser-check',
       '--disable-blink-features=AutomationControlled',
@@ -309,7 +299,6 @@ export async function launchChromeDirect(options = {}) {
     const pgs = context.pages();
     page = pgs[0] || await context.newPage();
     isConnected = true;
-    global.__chromeTempDir = tempDir;
     wireDisconnectHandler();
 
     let webdriver = 'unknown';
