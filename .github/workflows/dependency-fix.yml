@@ -1,0 +1,39 @@
+name: Apply dependency security fixes
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-and-test:
+    if: github.ref == 'refs/heads/security/hardening-review'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Propose safe dependency updates
+        run: |
+          npm install --save-dev --package-lock-only --ignore-scripts --no-audit --no-fund vitest@5.1.0
+          npm audit fix --package-lock-only --ignore-scripts --no-fund
+      - name: Validate dependency security
+        run: npm audit --audit-level=high
+      - name: Install and test
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+          npm run typecheck
+          bash -n scripts/start-browser.sh
+      - name: Upload tested lockfile proposal
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-security-lockfile
+          path: |
+            package.json
+            package-lock.json
+          retention-days: 7
